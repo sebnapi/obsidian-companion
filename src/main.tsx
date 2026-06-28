@@ -89,6 +89,20 @@ export default class Companion extends Plugin {
 	}[] = [];
 	statusBarItemEl: HTMLElement | null = null;
 
+	// Stable-and-cycle suggestion state. A suggestion is generated once per
+	// (prefix, suffix) and frozen — editor updates that don't change the prefix
+	// reuse it instead of regenerating. Ctrl+Space cycles alternatives, lazily
+	// generating a new one when you move past the ones already seen.
+	suggestion_state: {
+		prefix: string;
+		suffix: string;
+		alternatives: string[];
+		index: number;
+	} | null = null;
+	// Monotonic token so a slow generation that finishes after the prefix has
+	// moved on is discarded instead of clobbering a newer suggestion.
+	gen_seq: number = 0;
+
 	async setupModelChoice() {
 		await this.loadSettings();
 		this.enabled = this.settings.enable_by_default;
@@ -164,6 +178,13 @@ export default class Companion extends Plugin {
 			id: "suggest",
 			name: "Generate completion",
 			editorCallback: () => this.force_fetch(),
+		});
+		this.addCommand({
+			id: "cycle-alternative",
+			name: "Cycle to next completion alternative",
+			hotkeys: [{ modifiers: ["Ctrl"], key: " " }],
+			editorCallback: (editor: Editor) =>
+				this.cycleCompletion(editor),
 		});
 	}
 
@@ -255,37 +276,165 @@ export default class Companion extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	async *triggerCompletion(): AsyncGenerator<Suggestion, void, unknown> {
+	// Pull the prefix/suffix around the cursor for the active markdown view, or
+	// null if completion shouldn't run (no view, disabled, vim mode, empty line).
+	current_context(): { prefix: string; suffix: string } | null {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!view) return;
-		if (!this.enabled) return;
+		if (!view) return null;
+		if (!this.enabled) return null;
 		if ((view.editor as any)?.cm?.cm?.state?.keyMap === "vim") {
 			// Don't complete if vim mode is enabled
-			// (hehe I know more about the types than typescript does)
-			// (thus I can use "as any" wooooo)
-			return;
+			return null;
 		}
 
 		const cursor = view.editor.getCursor();
 		const currentLine = view.editor.getLine(cursor.line);
-		if (!currentLine.length) {
-			yield {
-				display_suggestion: "",
-				complete_suggestion: "",
-			};
-			return;
-		} // Don't complete on empty lines
+		if (!currentLine.length) return null; // Don't complete on empty lines
+
 		const prefix = view.editor.getRange({ line: 0, ch: 0 }, cursor);
 		const suffix = view.editor.getRange(cursor, {
 			line: view.editor.lastLine(),
 			ch: view.editor.getLine(view.editor.lastLine()).length,
 		});
+		return { prefix, suffix };
+	}
 
-		yield* this.complete(prefix, suffix);
+	make_suggestion(completion: string): Suggestion {
+		// The whole completion is offered as one block: it's shown as the ghost
+		// text and accepted in full (no word-by-word splitting), which keeps the
+		// frozen suggestion stable and predictable.
+		return {
+			display_suggestion: completion,
+			complete_suggestion: completion,
+		};
+	}
+
+	// Generate a single full completion for the given context. `temperature`,
+	// when provided, overrides the model setting (used while cycling so each
+	// alternative differs). Returns null on failure.
+	async generate_completion(
+		prefix: string,
+		suffix: string,
+		temperature?: number
+	): Promise<string | null> {
+		let provider = this.settings.provider;
+		let model = this.settings.model;
+		let cacher = await this.get_model(provider, model);
+		if (!cacher) {
+			await this.select_first_available_model();
+			cacher = await this.get_model(provider, this.settings.model);
+			if (!cacher) return null;
+		}
+		await this.load_model(cacher);
+		this.last_used_model = cacher;
+
+		let model_settings = cacher.model_settings;
+		if (temperature !== undefined) {
+			try {
+				const parsed = JSON.parse(model_settings || "{}");
+				parsed.temperature = temperature;
+				model_settings = JSON.stringify(parsed);
+			} catch (e) {
+				// settings weren't JSON; leave them as-is
+			}
+		}
+
+		try {
+			const completion = await cacher.model.complete(
+				{ prefix, suffix },
+				model_settings
+			);
+			return completion ?? null;
+		} catch (e) {
+			if (e && e.message) {
+				new Notice(`Error completing: ${e.message}`);
+			}
+			return null;
+		}
+	}
+
+	async *triggerCompletion(): AsyncGenerator<Suggestion, void, unknown> {
+		const ctx = this.current_context();
+		if (!ctx) {
+			yield { display_suggestion: "", complete_suggestion: "" };
+			return;
+		}
+		const { prefix, suffix } = ctx;
+
+		// Frozen: same prefix/suffix as the live suggestion → reuse it, no
+		// regeneration. This is what makes the suggestion stable across editor
+		// updates that don't change the text.
+		const st = this.suggestion_state;
+		if (
+			st &&
+			st.prefix === prefix &&
+			st.suffix === suffix &&
+			st.alternatives.length > 0
+		) {
+			yield this.make_suggestion(st.alternatives[st.index]);
+			return;
+		}
+
+		// Prefix changed (or first run) → generate one fresh alternative.
+		const seq = ++this.gen_seq;
+		const completion = await this.generate_completion(prefix, suffix);
+		// Discard if a newer trigger superseded us while we were waiting.
+		if (seq !== this.gen_seq) return;
+
+		this.suggestion_state = {
+			prefix,
+			suffix,
+			alternatives: completion ? [completion] : [],
+			index: 0,
+		};
+		if (completion) {
+			yield this.make_suggestion(completion);
+		} else {
+			yield { display_suggestion: "", complete_suggestion: "" };
+		}
+	}
+
+	// Ctrl+Space: advance to the next alternative for the current prefix,
+	// generating a fresh one on demand when we've reached the end.
+	async cycleCompletion(_editor: Editor) {
+		const ctx = this.current_context();
+		if (!ctx) return;
+		const { prefix, suffix } = ctx;
+
+		let st = this.suggestion_state;
+		if (!st || st.prefix !== prefix || st.suffix !== suffix) {
+			st = this.suggestion_state = {
+				prefix,
+				suffix,
+				alternatives: [],
+				index: 0,
+			};
+		}
+
+		if (st.index < st.alternatives.length - 1) {
+			// Cycle forward through alternatives we already generated.
+			st.index += 1;
+		} else {
+			// Generate a new alternative on demand, with raised temperature so
+			// it differs from the ones already shown.
+			const seq = ++this.gen_seq;
+			const completion = await this.generate_completion(
+				prefix,
+				suffix,
+				0.9
+			);
+			if (seq !== this.gen_seq) return;
+			if (!completion) return;
+			st.alternatives.push(completion);
+			st.index = st.alternatives.length - 1;
+		}
+		// Re-render: triggerCompletion will now yield the frozen current alt.
+		this.force_fetch();
 	}
 
 	async acceptCompletion(editor: Editor) {
-		const suggestion = this.last_used_model?.last_suggestion;
+		const st = this.suggestion_state;
+		const suggestion = st?.alternatives[st.index];
 		if (suggestion) {
 			editor.replaceRange(suggestion, editor.getCursor());
 			editor.setCursor({
@@ -298,6 +447,8 @@ export default class Companion extends Plugin {
 				line:
 					editor.getCursor().line + suggestion.split("\n").length - 1,
 			});
+			// Clear so the next prefix generates fresh.
+			this.suggestion_state = null;
 			this.force_fetch();
 		}
 	}
@@ -495,8 +646,9 @@ class CompanionSettingsTab extends PluginSettingTab {
 			this.reload_signal.reload = false;
 			const reload = async () => {
 				const app: any = this.plugin.app; // Otherwise typescript complains
-				await app.plugins.disablePlugin("companion");
-				await app.plugins.enablePlugin("companion");
+				const id = this.plugin.manifest.id;
+				await app.plugins.disablePlugin(id);
+				await app.plugins.enablePlugin(id);
 			};
 			reload();
 		}
