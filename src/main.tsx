@@ -17,6 +17,7 @@ import SettingsComponent from "./settings/settings";
 import { CompletionCacher } from "./cache";
 import { available } from "./complete/completers";
 import { Model } from "./complete/complete";
+import { set_plugin_app } from "./obsidian_app";
 
 interface CompanionModelSettings {
 	name: string;
@@ -167,6 +168,7 @@ export default class Companion extends Plugin {
 	}
 
 	async onload() {
+		set_plugin_app(this.app);
 		await this.setupModelChoice();
 		await this.setupToggle();
 		await this.setupSuggestions();

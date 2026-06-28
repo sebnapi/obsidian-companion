@@ -1,5 +1,6 @@
-import { Notice } from "obsidian";
+import { Notice, TFile } from "obsidian";
 import { Completer, Model, Prompt } from "../../complete";
+import { get_plugin_app } from "../../../obsidian_app";
 import {
 	SettingsUI as ProviderSettingsUI,
 	Settings as ProviderSettings,
@@ -52,13 +53,42 @@ export default class OpenRouter implements Model {
 		};
 	}
 
+	async read_context_files(
+		paths: string[] | undefined
+	): Promise<{ path: string; contents: string }[]> {
+		if (!paths || paths.length === 0) return [];
+		const app = get_plugin_app();
+		if (!app) return [];
+
+		const files = await Promise.all(
+			paths.map(async (path) => {
+				const file = app.vault.getAbstractFileByPath(path);
+				if (!(file instanceof TFile)) return null;
+				try {
+					const contents = await app.vault.cachedRead(file);
+					return { path, contents };
+				} catch (e) {
+					return null;
+				}
+			})
+		);
+
+		return files.filter(
+			(f): f is { path: string; contents: string } => f !== null
+		);
+	}
+
 	async generate_messages(
 		prompt: Prompt,
 		model_settings: {
 			system_prompt: string;
 			user_prompt: string;
+			context_files?: string[];
 		}
 	): Promise<{ role: "system" | "user"; content: string }[]> {
+		const context_files = await this.read_context_files(
+			model_settings.context_files
+		);
 		return [
 			{
 				role: "system",
@@ -66,10 +96,11 @@ export default class OpenRouter implements Model {
 			},
 			{
 				role: "user",
-				content: Mustache.render(
-					model_settings.user_prompt,
-					await this.prepare(prompt, model_settings)
-				),
+				content: Mustache.render(model_settings.user_prompt, {
+					...(await this.prepare(prompt, model_settings)),
+					context_files,
+					has_context: context_files.length > 0,
+				}),
 			},
 		];
 	}

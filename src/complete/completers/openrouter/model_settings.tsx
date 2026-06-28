@@ -1,5 +1,8 @@
 import * as React from "react";
+import { Notice } from "obsidian";
 import SettingsItem from "../../../components/SettingsItem";
+import { get_plugin_app } from "../../../obsidian_app";
+import { FileSuggestModal } from "./file_suggest";
 import { z } from "zod";
 
 export const settings_schema = z.object({
@@ -10,6 +13,8 @@ export const settings_schema = z.object({
 	presence_penalty: z.number().optional(),
 	frequency_penalty: z.number().optional(),
 	prompt_length: z.number().optional(),
+	// Vault-relative paths of notes to attach to every prompt as context.
+	context_files: z.array(z.string()).optional(),
 });
 
 export type Settings = z.infer<typeof settings_schema>;
@@ -17,7 +22,9 @@ export type Settings = z.infer<typeof settings_schema>;
 const default_settings: Settings = {
 	system_prompt:
 		"You are trying to give a long suggestion on how to complete the user's message. Complete in the language of the original message. Write only the completion and nothing else. Do not include the user's text in your message. Only include the completion.",
-	user_prompt: "Continue the following:\n\n{{prefix}}",
+	user_prompt:
+		"{{#has_context}}Use the following notes as background context:\n\n{{#context_files}}--- {{path}} ---\n{{contents}}\n\n{{/context_files}}{{/has_context}}Continue the following:\n\n{{prefix}}",
+	context_files: [],
 };
 
 export const parse_settings = (data: string | null): Settings => {
@@ -69,6 +76,64 @@ export function SettingsUI({
 					)
 				}
 			/>
+			<SettingsItem
+				name="Context files"
+				description={
+					<>
+						Notes whose contents are attached to every prompt as
+						context. Available in the user prompt template as{" "}
+						<code>{"{{context_files}}"}</code> (a list of{" "}
+						<code>path</code>/<code>contents</code>).
+					</>
+				}
+			>
+				<button
+					onClick={() => {
+						const app = get_plugin_app();
+						if (!app) {
+							new Notice(
+								"Companion: vault is not available yet."
+							);
+							return;
+						}
+						new FileSuggestModal(app, (file) => {
+							const current = parsed_settings.context_files || [];
+							if (current.includes(file.path)) {
+								new Notice(
+									`"${file.path}" is already a context file.`
+								);
+								return;
+							}
+							saveSettings(
+								JSON.stringify({
+									...parsed_settings,
+									context_files: [...current, file.path],
+								})
+							);
+						}).open();
+					}}
+				>
+					Add file
+				</button>
+			</SettingsItem>
+			{(parsed_settings.context_files || []).map((path) => (
+				<SettingsItem key={path} name={path}>
+					<button
+						onClick={() =>
+							saveSettings(
+								JSON.stringify({
+									...parsed_settings,
+									context_files: (
+										parsed_settings.context_files || []
+									).filter((p) => p !== path),
+								})
+							)
+						}
+					>
+						Remove
+					</button>
+				</SettingsItem>
+			))}
 			<SettingsItem name="Temperature">
 				<input
 					type="number"
