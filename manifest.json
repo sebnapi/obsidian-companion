@@ -1,11 +1,11 @@
 {
-	"id": "companion",
-	"name": "Companion",
+	"id": "sebs-companion",
+	"name": "Seb's Companion",
 	"version": "1.8.0",
 	"minAppVersion": "1.1.16",
-	"description": "Autocomplete with AI, including ChatGPT and ollama, through a copilot-like interface.",
-	"author": "rizerphe",
-	"authorUrl": "https://github.com/rizerphe",
+	"description": "Autocomplete with AI, including ChatGPT, OpenRouter and ollama, through a copilot-like interface.",
+	"author": "sebnapi",
+	"authorUrl": "https://github.com/sebnapi/obsidian-companion",
 	"fundingUrl": "https://www.buymeacoffee.com/rizerphe",
 	"isDesktopOnly": false
 }
