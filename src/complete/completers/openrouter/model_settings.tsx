@@ -13,6 +13,9 @@ export const settings_schema = z.object({
 	presence_penalty: z.number().optional(),
 	frequency_penalty: z.number().optional(),
 	prompt_length: z.number().optional(),
+	// Max tokens for the completion. Reasoning models can burn the whole
+	// budget "thinking" and return no visible text, so this is configurable.
+	max_tokens: z.number().optional(),
 	// Vault-relative paths of notes to attach to every prompt as context.
 	context_files: z.array(z.string()).optional(),
 });
@@ -24,6 +27,7 @@ const default_settings: Settings = {
 		"You are trying to give a long suggestion on how to complete the user's message. Complete in the language of the original message. Write only the completion and nothing else. Do not include the user's text in your message. Only include the completion.",
 	user_prompt:
 		"{{#has_context}}Use the following notes as background context:\n\n{{#context_files}}--- {{path}} ---\n{{contents}}\n\n{{/context_files}}{{/has_context}}Continue the following:\n\n{{prefix}}",
+	max_tokens: 128,
 	context_files: [],
 };
 
@@ -227,6 +231,33 @@ export function SettingsUI({
 							JSON.stringify({
 								...parsed_settings,
 								prompt_length: parseInt(e.target.value),
+							})
+						)
+					}
+				/>
+			</SettingsItem>
+			<SettingsItem
+				name="Max tokens"
+				description={
+					<>
+						Maximum length of the completion. Reasoning models may
+						need a higher value to leave room for visible text after
+						thinking (reasoning is disabled by this provider anyway).
+					</>
+				}
+			>
+				<input
+					type="number"
+					value={
+						parsed_settings.max_tokens === undefined
+							? ""
+							: parsed_settings.max_tokens
+					}
+					onChange={(e) =>
+						saveSettings(
+							JSON.stringify({
+								...parsed_settings,
+								max_tokens: parseInt(e.target.value),
 							})
 						)
 					}

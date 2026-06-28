@@ -190,8 +190,12 @@ export default class OpenRouter implements Model {
 				...this.model_parameters(model_settings),
 				messages: await this.generate_messages(prompt, model_settings),
 				model: this.id,
-				max_tokens: 64,
-			});
+				max_tokens: model_settings.max_tokens ?? 128,
+				// OpenRouter: turn off reasoning. For inline completion we want
+				// the answer directly; reasoning models otherwise spend the
+				// whole token budget "thinking" and return empty content.
+				reasoning: { enabled: false },
+			} as any);
 
 			return this.interpret(
 				prompt,
@@ -207,13 +211,15 @@ export default class OpenRouter implements Model {
 		const model_settings = parse_model_settings(settings);
 
 		try {
-			const completion = await this.get_api().chat.completions.create({
+			const completion = (await this.get_api().chat.completions.create({
 				...this.model_parameters(model_settings),
 				messages: await this.generate_messages(prompt, model_settings),
 				model: this.id,
-				max_tokens: 64,
+				max_tokens: model_settings.max_tokens ?? 128,
 				stream: true,
-			});
+				// See note in complete(): disable reasoning for inline use.
+				reasoning: { enabled: false },
+			} as any)) as unknown as AsyncIterable<any>;
 
 			let initialized = false;
 			for await (const chunk of completion) {
