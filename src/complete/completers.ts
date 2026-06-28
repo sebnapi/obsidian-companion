@@ -6,6 +6,7 @@ import { GooseAIComplete } from "./completers/gooseai/gooseai";
 import { OobaboogaComplete } from "./completers/oobabooga/oobabooga";
 import { OllamaComplete } from "./completers/ollama/ollama";
 import { GroqComplete } from "./completers/groq/groq";
+import { OpenRouterComplete } from "./completers/openrouter/openrouter";
 
 export const available: Completer[] = [
 	new ChatGPTComplete(),
@@ -15,4 +16,5 @@ export const available: Completer[] = [
 	new OobaboogaComplete(),
 	new OllamaComplete(),
 	new GroqComplete(),
+	new OpenRouterComplete(),
 ];
